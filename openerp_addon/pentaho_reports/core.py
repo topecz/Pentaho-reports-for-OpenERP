@@ -8,30 +8,31 @@ import base64
 from openerp import netsvc
 from openerp import pooler
 from openerp import report
-from openerp import models
+from openerp import models, fields, _
 from openerp.exceptions import except_orm
 from openerp.tools import config
-from openerp.tools.translate import _
 import logging
 import time
 import openerp
 from datetime import datetime
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT, DEFAULT_SERVER_DATETIME_FORMAT
+from openerp import SUPERUSER_ID
 
 from .java_oe import JAVA_MAPPING, check_java_list, PARAM_VALUES, RESERVED_PARAMS
+from openerp.addons.pentaho_reports.core_newapi import SKIP_DATE
 
 _logger = logging.getLogger(__name__)
 
 SERVICE_NAME_PREFIX = 'report.'
 VALID_OUTPUT_TYPES = [('pdf', 'Portable Document (pdf)'),
                       ('xls', 'Excel Spreadsheet (xls)'),
+                      ('xlsx', 'Excel 2007 Spreadsheet (xlsx)'),
                       ('csv', 'Comma Separated Values (csv)'),
                       ('rtf', 'Rich Text (rtf)'),
                       ('html', 'HyperText (html)'),
                       ('txt', 'Plain Text (txt)'),
                       ]
 DEFAULT_OUTPUT_TYPE = 'pdf'
-
 
 def get_date_length(date_format=DEFAULT_SERVER_DATE_FORMAT):
     return len((datetime.now()).strftime(date_format))
@@ -137,13 +138,15 @@ def get_proxy_args(instance, cr, uid, prpt_content, context_vars={}):
     xml_interface = config_obj.get_param(cr, uid, 'pentaho.openerp.xml.interface', default='').strip() or config['xmlrpc_interface'] or 'localhost'
     xml_port = config_obj.get_param(cr, uid, 'pentaho.openerp.xml.port', default='').strip() or str(config['xmlrpc_port'])
 
+    password_to_use = pool.get('res.users').pentaho_pass_token(cr, uid, uid)
+
     proxy_argument = {
                       'prpt_file_content': xmlrpclib.Binary(prpt_content),
                       'connection_settings': {'openerp': {'host': xml_interface,
                                                           'port': xml_port,
                                                           'db': cr.dbname,
                                                           'login': current_user.login,
-                                                          'password': current_user.password,
+                                                          'password': password_to_use,
                                                           }},
                       'report_parameters': dict([(param_name, param_formula(instance, cr, uid, context_vars)) for (param_name, param_formula) in RESERVED_PARAMS.iteritems() if param_formula(instance, cr, uid, context_vars)]),
                       }
@@ -162,6 +165,9 @@ def get_proxy_args(instance, cr, uid, prpt_content, context_vars={}):
                                                                    }})
 
     return proxy_url, proxy_argument
+
+def clean_proxy_args(instance, cr, uid, prpt_content, proxy_argument):
+    pooler.get_pool(cr.dbname).get('res.users').pentaho_undo_token(cr, uid, uid, proxy_argument.get('connection_settings',{}).get('openerp',{}).get('password',''))
 
 
 class Report(object):
@@ -204,7 +210,10 @@ class Report(object):
 
         proxy_url, proxy_argument = get_proxy_args(self, self.cr, self.uid, self.prpt_content, self.context_vars)
         proxy = xmlrpclib.ServerProxy(proxy_url)
-        return proxy.report.getParameterInfo(proxy_argument)
+        result = proxy.report.getParameterInfo(proxy_argument)
+
+        clean_proxy_args(self, self.cr, self.uid, self.prpt_content, proxy_argument)
+        return result
 
     def execute_report(self):
         proxy_url, proxy_argument = get_proxy_args(self, self.cr, self.uid, self.prpt_content, self.context_vars)
@@ -228,6 +237,8 @@ class Report(object):
                         proxy_argument['report_parameters'][parameter['name']] = [proxy_argument['report_parameters'][parameter['name']]]
 
         rendered_report = proxy.report.execute(proxy_argument).data
+        clean_proxy_args(self, self.cr, self.uid, self.prpt_content, proxy_argument)
+
         if len(rendered_report) == 0:
             raise except_orm(_('Error'), _("Pentaho returned no data for the report '%s'. Check report definition and parameters.") % self.name[len(SERVICE_NAME_PREFIX):])
 
@@ -251,12 +262,7 @@ class PentahoReportOpenERPInterface(report.interface.report_int):
         if report_xml_ids:
             report_xml = ir_pool.browse(cr, uid, report_xml_ids[0], context=context)
             if report_xml.attachment:
-                crtemp = pooler.get_db(cr.dbname).cursor()  # Creating new cursor to prevent TransactionRollbackError
-                                                            # when creating attachments, avoids concurrency issues
-                self.create_attachment(crtemp, uid, ids, report_xml.attachment, rendered_report, output_type, report_xml.pentaho_report_model_id.model, context=context)
-
-                crtemp.commit()  # It means attachment will be created even if error occurs
-                crtemp.close()
+                self.create_attachment(cr, uid, ids, report_xml.attachment, rendered_report, output_type, report_xml.pentaho_report_model_id.model, context=context)
         return rendered_report, output_type
 
     def getObjects(self, cr, uid, ids, model, context):
@@ -289,7 +295,7 @@ class PentahoReportOpenERPInterface(report.interface.report_int):
                         'res_model': model,
                         'res_name': aname,
                         'res_id': obj.id,
-                        }, context={}
+                        }, context=ctx
                     )
                 except Exception:
                     #TODO: should probably raise a proper osv_except instead, shouldn't we? see LP bug #325632
@@ -365,3 +371,4 @@ class ir_actions_report_xml(models.Model):
             return new_report
         else:
             return super(ir_actions_report_xml, self)._lookup_report(cr, name)
+

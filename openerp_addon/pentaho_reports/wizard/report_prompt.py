@@ -15,7 +15,7 @@ from openerp.tools import DEFAULT_SERVER_DATE_FORMAT, DEFAULT_SERVER_DATETIME_FO
 from openerp.exceptions import except_orm, Warning
 
 from ..java_oe import *
-from ..core import get_proxy_args, VALID_OUTPUT_TYPES, DEFAULT_OUTPUT_TYPE
+from ..core import get_proxy_args, clean_proxy_args, VALID_OUTPUT_TYPES, DEFAULT_OUTPUT_TYPE
 
 
 def all_parameters(cls):
@@ -198,6 +198,8 @@ class report_prompt_class(models.TransientModel):
         proxy = xmlrpclib.ServerProxy(proxy_url)
         report_parameters = proxy.report.getParameterInfo(proxy_argument)
 
+        clean_proxy_args(self, cr, uid, prpt_content, proxy_argument)
+
         return self._parse_report_parameters(report_parameters, context=context)
 
     def report_defaults_dictionary(self, cr, uid, report_action_id, parameters, x2m_unique_id, context=None):
@@ -243,6 +245,7 @@ class report_prompt_class(models.TransientModel):
     def default_get(self, cr, uid, fields, context=None):
         if context is None:
             context={}
+
         report_action_id = self._find_report_id(cr, uid, context=context)
         parameters = self._setup_parameters(cr, uid, report_action_id, context=context)
 

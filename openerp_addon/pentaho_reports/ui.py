@@ -19,17 +19,13 @@ ADDONS_PATHS = config['addons_path'].split(",")
 class report_xml(models.Model):
     _inherit = 'ir.actions.report.xml'
 
-    def __init__(self, pool, cr):
-        if not('pentaho','Pentaho Report') in self._columns['report_type'].selection:
-            self._columns['report_type'].selection.append(('pentaho', 'Pentaho Report'))
-        super(report_xml, self).__init__(pool, cr)
-
-    pentaho_report_output_type = fields.Selection([("pdf", "PDF"), ("html", "HTML"), ("csv", "CSV"), ("xls", "Excel"), ("rtf", "RTF"), ("txt", "Plain text")],
+    report_type = fields.Selection(selection_add=[('pentaho','Pentaho Report')])
+    pentaho_report_output_type = fields.Selection([("pdf", "PDF"), ("html", "HTML"), ("csv", "CSV"), ("xls", "Excel"), ("xlsx", "Excel 2007"), ("rtf", "RTF"), ("txt", "Plain text")],
                                                    string = 'Output format')
     pentaho_report_model_id = fields.Many2one('ir.model', string='Model')
     pentaho_file = fields.Binary(string='File', filters='*.prpt')
     pentaho_filename = fields.Char(string='Filename', size=256, required=False)
-#                 'is_pentaho_report': fields.boolean('Is this a Pentaho report?'),
+#                 'is_pentaho_report': fields.Boolean('Is this a Pentaho report?'),
     linked_menu_id = fields.Many2one('ir.ui.menu', string='Linked menu item', select=True)
     created_menu_id = fields.Many2one('ir.ui.menu', string='Created menu item')
     # This is not displayed on the client - it is a trigger to indicate that
@@ -49,6 +45,13 @@ class report_xml(models.Model):
         else:
             if self.pentaho_report_model_id:
                 self.model = self.pentaho_report_model_id.model
+
+    @api.onchange('pentaho_report_model_id')
+    def _onchange_model_id(self):
+        if self.pentaho_report_model_id:
+            self.model = self.pentaho_report_model_id.model
+        else:
+            self.model = False
 
     def copy(self, cr, uid, id, default=None, context=None):
         if default is None:
@@ -328,7 +331,7 @@ class report_xml(models.Model):
             raise except_orm(_('Error'), _("Report '%s' must be passed active ids or parameter values.") % service_name)
 
         datas = {'model': report.model,
-                 'output_type': report.report_type,
+                 'report_type': report.report_type,
                 }
 
         if active_ids:
